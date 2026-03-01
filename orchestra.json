@@ -1,0 +1,23 @@
+{
+    "name": "orchestra-mcp/plugin-devtools-database",
+    "description": "devtools-database tools plugin for Orchestra MCP.",
+    "type": "tools",
+    "license": "MIT",
+    "homepage": "https://orchestra-mcp.dev",
+    "support": {
+        "issues": "https://github.com/orchestra-mcp/plugin-devtools-database/issues",
+        "source": "https://github.com/orchestra-mcp/plugin-devtools-database"
+    },
+    "require": {
+        "orchestra-mcp/gen-go": "^0.1.0",
+        "orchestra-mcp/sdk-go": "^0.1.0"
+    },
+    "bin": "devtools-database",
+    "extra": {
+        "plugin-id": "tools.devtools-database",
+        "provides": ["tools"],
+        "branch-alias": {
+            "dev-master": "0.1.x-dev"
+        }
+    }
+}
