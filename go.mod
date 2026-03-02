@@ -3,8 +3,8 @@ module github.com/orchestra-mcp/plugin-devtools-database
 go 1.24.0
 
 require (
-	github.com/orchestra-mcp/gen-go v0.1.3
-	github.com/orchestra-mcp/sdk-go v0.1.3
+	github.com/orchestra-mcp/gen-go v1.0.0
+	github.com/orchestra-mcp/sdk-go v1.0.0
 	google.golang.org/protobuf v1.36.11
 	modernc.org/sqlite v1.46.0
 )
