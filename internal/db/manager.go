@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
@@ -8,12 +9,37 @@ import (
 	"sync"
 )
 
+// ProviderFactory creates a Provider from a *sql.DB connection.
+type ProviderFactory func(sqlDB *sql.DB) Provider
+
+// providerFactories maps driver names to their factory functions.
+var providerFactories = map[string]ProviderFactory{}
+
+// RegisterProviderFactory registers a factory for the given driver name.
+// This is called from provider init() functions to avoid import cycles.
+func RegisterProviderFactory(driver string, factory ProviderFactory) {
+	providerFactories[driver] = factory
+}
+
+// NonSQLProviderFactory creates a Provider directly from a DSN string.
+// Used for non-SQL databases (e.g. Redis) that don't use database/sql.
+type NonSQLProviderFactory func(dsn string) (Provider, error)
+
+// nonSQLFactories maps driver names to their non-SQL factory functions.
+var nonSQLFactories = map[string]NonSQLProviderFactory{}
+
+// RegisterNonSQLProviderFactory registers a factory for a non-SQL driver.
+func RegisterNonSQLProviderFactory(driver string, factory NonSQLProviderFactory) {
+	nonSQLFactories[driver] = factory
+}
+
 // Connection represents an active database connection.
 type Connection struct {
-	ID     string
-	Driver string
-	DSN    string
-	DB     *sql.DB
+	ID       string
+	Driver   string
+	DSN      string
+	DB       *sql.DB
+	Provider Provider
 }
 
 // ConnectionInfo is a read-only summary of a connection (no *sql.DB exposed).
@@ -37,33 +63,78 @@ func NewManager() *Manager {
 }
 
 // Connect opens a new database connection with the given driver and DSN.
-// Supported drivers: "postgres", "sqlite3", "mysql".
+// Supported drivers: "postgres", "sqlite3", "sqlite", "mysql", "redis".
 // Returns the connection ID on success.
 func (m *Manager) Connect(driver, dsn string) (string, error) {
+	// Check non-SQL factories first (e.g. Redis).
+	if factory, ok := nonSQLFactories[driver]; ok {
+		provider, err := factory(dsn)
+		if err != nil {
+			return "", fmt.Errorf("connect %s: %w", driver, err)
+		}
+
+		id := generateID()
+		m.mu.Lock()
+		m.connections[id] = &Connection{
+			ID:       id,
+			Driver:   driver,
+			DSN:      dsn,
+			DB:       nil,
+			Provider: provider,
+		}
+		m.mu.Unlock()
+		return id, nil
+	}
+
+	// SQL path.
 	switch driver {
 	case "postgres", "sqlite3", "sqlite", "mysql":
 	default:
-		return "", fmt.Errorf("unsupported driver %q (supported: postgres, sqlite3, sqlite, mysql)", driver)
+		return "", fmt.Errorf("unsupported driver %q (supported: postgres, sqlite, mysql, redis, mongodb)", driver)
 	}
 
-	db, err := sql.Open(driver, dsn)
+	// Normalize driver name for sql.Open():
+	// - modernc.org/sqlite registers as "sqlite"
+	// - jackc/pgx registers as "pgx"
+	openDriver := driver
+	if driver == "sqlite3" {
+		openDriver = "sqlite"
+	} else if driver == "postgres" {
+		openDriver = "pgx"
+	}
+
+	sqlDB, err := sql.Open(openDriver, dsn)
 	if err != nil {
 		return "", fmt.Errorf("open %s: %w", driver, err)
 	}
 
-	if err := db.Ping(); err != nil {
-		db.Close()
+	if err := sqlDB.Ping(); err != nil {
+		sqlDB.Close()
 		return "", fmt.Errorf("ping %s: %w", driver, err)
 	}
 
+	// Resolve factory key: sqlite3 and sqlite both use "sqlite".
+	factoryKey := driver
+	if factoryKey == "sqlite3" {
+		factoryKey = "sqlite"
+	}
+
+	factory, ok := providerFactories[factoryKey]
+	if !ok {
+		sqlDB.Close()
+		return "", fmt.Errorf("no provider factory registered for driver %q", driver)
+	}
+
+	provider := factory(sqlDB)
 	id := generateID()
 
 	m.mu.Lock()
 	m.connections[id] = &Connection{
-		ID:     id,
-		Driver: driver,
-		DSN:    dsn,
-		DB:     db,
+		ID:       id,
+		Driver:   driver,
+		DSN:      dsn,
+		DB:       sqlDB,
+		Provider: provider,
 	}
 	m.mu.Unlock()
 
@@ -81,7 +152,7 @@ func (m *Manager) Disconnect(id string) error {
 	delete(m.connections, id)
 	m.mu.Unlock()
 
-	return conn.DB.Close()
+	return conn.Provider.Close()
 }
 
 // Get returns the connection with the given ID or an error if not found.
@@ -94,6 +165,15 @@ func (m *Manager) Get(id string) (*Connection, error) {
 		return nil, fmt.Errorf("connection %q not found", id)
 	}
 	return conn, nil
+}
+
+// GetProvider returns the Provider for the connection with the given ID.
+func (m *Manager) GetProvider(id string) (Provider, error) {
+	conn, err := m.Get(id)
+	if err != nil {
+		return nil, err
+	}
+	return conn.Provider, nil
 }
 
 // List returns info about all active connections.
@@ -113,70 +193,26 @@ func (m *Manager) List() []ConnectionInfo {
 }
 
 // Query executes a SELECT query on the given connection and returns rows as
-// a slice of maps. Each map key is a column name, each value is the column
-// value (as returned by sql.Rows.Scan into *any).
+// a slice of maps. Delegates to the connection's Provider.
 func (m *Manager) Query(id, query string, args ...any) ([]map[string]any, error) {
 	conn, err := m.Get(id)
 	if err != nil {
 		return nil, err
 	}
 
-	rows, err := conn.DB.Query(query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("query: %w", err)
-	}
-	defer rows.Close()
-
-	cols, err := rows.Columns()
-	if err != nil {
-		return nil, fmt.Errorf("columns: %w", err)
-	}
-
-	var results []map[string]any
-	for rows.Next() {
-		values := make([]any, len(cols))
-		pointers := make([]any, len(cols))
-		for i := range values {
-			pointers[i] = &values[i]
-		}
-		if err := rows.Scan(pointers...); err != nil {
-			return nil, fmt.Errorf("scan: %w", err)
-		}
-		row := make(map[string]any, len(cols))
-		for i, col := range cols {
-			val := values[i]
-			// Convert []byte to string for JSON serialization.
-			if b, ok := val.([]byte); ok {
-				val = string(b)
-			}
-			row[col] = val
-		}
-		results = append(results, row)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("rows: %w", err)
-	}
-	return results, nil
+	return conn.Provider.Query(context.Background(), query, args...)
 }
 
 // Exec executes a non-SELECT statement (INSERT, UPDATE, DELETE, etc.) on the
-// given connection and returns the number of rows affected.
+// given connection and returns the number of rows affected. Delegates to the
+// connection's Provider.
 func (m *Manager) Exec(id, query string, args ...any) (int64, error) {
 	conn, err := m.Get(id)
 	if err != nil {
 		return 0, err
 	}
 
-	result, err := conn.DB.Exec(query, args...)
-	if err != nil {
-		return 0, fmt.Errorf("exec: %w", err)
-	}
-
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("rows affected: %w", err)
-	}
-	return affected, nil
+	return conn.Provider.Exec(context.Background(), query, args...)
 }
 
 // generateID returns a connection ID in the form "db-" + 6 random hex chars.

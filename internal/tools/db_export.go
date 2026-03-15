@@ -54,6 +54,18 @@ func DbExport(mgr *db.Manager) func(ctx context.Context, req *pluginv1.ToolReque
 		table := helpers.GetString(req.Arguments, "table")
 		format := helpers.GetString(req.Arguments, "format")
 
+		// Redis and MongoDB do not support SQL-based export.
+		if provider, err := mgr.GetProvider(connID); err == nil {
+			switch provider.Kind() {
+			case db.ProviderRedis:
+				return helpers.ErrorResult("unsupported",
+					"db_export is not supported on Redis connections. Use redis_scan_keys or redis_keys to inspect data."), nil
+			case db.ProviderMongoDB:
+				return helpers.ErrorResult("unsupported",
+					"db_export is not supported on MongoDB connections. Use mongo_export instead."), nil
+			}
+		}
+
 		if err := helpers.ValidateOneOf(format, "csv", "json"); err != nil {
 			return helpers.ErrorResult("validation_error", err.Error()), nil
 		}

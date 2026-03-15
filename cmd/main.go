@@ -11,7 +11,8 @@ import (
 	"github.com/orchestra-mcp/sdk-go/plugin"
 
 	// Register database drivers.
-	_ "modernc.org/sqlite" // sqlite driver (driver name: "sqlite")
+	_ "github.com/go-sql-driver/mysql" // mysql driver (driver name: "mysql")
+	_ "modernc.org/sqlite"             // sqlite driver (driver name: "sqlite")
 )
 
 func main() {

@@ -17,8 +17,8 @@ func DbConnectSchema() *structpb.Struct {
 		"properties": map[string]any{
 			"driver": map[string]any{
 				"type":        "string",
-				"description": "Database driver (postgres, sqlite3, mysql)",
-				"enum":        []any{"postgres", "sqlite3", "mysql"},
+				"description": "Database driver (sqlite, postgres, mysql, mongodb, redis, firestore)",
+				"enum":        []any{"postgres", "sqlite", "sqlite3", "mysql", "mongodb", "redis", "firestore"},
 			},
 			"dsn": map[string]any{
 				"type":        "string",

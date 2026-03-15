@@ -38,37 +38,16 @@ func DbListTables(mgr *db.Manager) func(ctx context.Context, req *pluginv1.ToolR
 		}
 
 		connID := helpers.GetString(req.Arguments, "connection_id")
+		schema := helpers.GetStringOr(req.Arguments, "schema", "")
 
-		conn, err := mgr.Get(connID)
+		provider, err := mgr.GetProvider(connID)
 		if err != nil {
 			return helpers.ErrorResult("connection_error", err.Error()), nil
 		}
 
-		var rows []map[string]any
-
-		switch conn.Driver {
-		case "postgres":
-			schema := helpers.GetStringOr(req.Arguments, "schema", "public")
-			rows, err = mgr.Query(connID, "SELECT tablename FROM pg_tables WHERE schemaname = $1", schema)
-		case "sqlite3", "sqlite":
-			rows, err = mgr.Query(connID, "SELECT name FROM sqlite_master WHERE type='table'")
-		case "mysql":
-			rows, err = mgr.Query(connID, "SHOW TABLES")
-		default:
-			return helpers.ErrorResult("driver_error", fmt.Sprintf("unsupported driver: %s", conn.Driver)), nil
-		}
-
+		tables, err := provider.ListTables(ctx, schema)
 		if err != nil {
 			return helpers.ErrorResult("query_error", err.Error()), nil
-		}
-
-		tables := make([]string, 0, len(rows))
-		for _, row := range rows {
-			for _, v := range row {
-				if s, ok := v.(string); ok {
-					tables = append(tables, s)
-				}
-			}
 		}
 
 		if len(tables) == 0 {
@@ -78,7 +57,7 @@ func DbListTables(mgr *db.Manager) func(ctx context.Context, req *pluginv1.ToolR
 		var b strings.Builder
 		fmt.Fprintf(&b, "Found %d tables:\n\n", len(tables))
 		for _, t := range tables {
-			fmt.Fprintf(&b, "- %s\n", t)
+			fmt.Fprintf(&b, "- %s\n", t.Name)
 		}
 		return helpers.TextResult(b.String()), nil
 	}

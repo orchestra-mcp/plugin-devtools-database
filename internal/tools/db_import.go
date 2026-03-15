@@ -54,6 +54,18 @@ func DbImport(mgr *db.Manager) func(ctx context.Context, req *pluginv1.ToolReque
 		table := helpers.GetString(req.Arguments, "table")
 		path := helpers.GetString(req.Arguments, "path")
 
+		// Redis and MongoDB do not support SQL-based import.
+		if provider, err := mgr.GetProvider(connID); err == nil {
+			switch provider.Kind() {
+			case db.ProviderRedis:
+				return helpers.ErrorResult("unsupported",
+					"db_import is not supported on Redis connections. Use redis_strings, redis_hashes, or redis_pipeline to write data."), nil
+			case db.ProviderMongoDB:
+				return helpers.ErrorResult("unsupported",
+					"db_import is not supported on MongoDB connections. Use mongo_import instead."), nil
+			}
+		}
+
 		format := helpers.GetString(req.Arguments, "format")
 		if format == "" {
 			// Auto-detect from file extension.

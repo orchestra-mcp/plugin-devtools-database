@@ -14,6 +14,9 @@ import (
 
 	// Register the modernc pure-Go SQLite driver.
 	_ "modernc.org/sqlite"
+
+	// Register provider factories (SQLite, Postgres, MySQL).
+	_ "github.com/orchestra-mcp/plugin-devtools-database/internal/db/providers"
 )
 
 // ---------- helpers ----------
